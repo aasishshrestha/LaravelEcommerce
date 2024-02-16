@@ -1,0 +1,130 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Order;
+use App\Models\Payment;
+use App\Models\Product;
+use App\Models\Shipping;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+
+class PaymentController extends Controller
+{
+    public function khaltiPayment(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email',
+            'name' => 'required',
+            'city' => 'required',
+            'address' => 'required',
+            'phone' => 'required',
+            'payment' => 'required',
+        ]);
+
+        $product = Product::find($request->prid);
+
+
+        $order = Order::create([
+            'product_id' => $request->prid,
+            'user_id' => $request->user()->id,
+        ]);
+        // dd($order->id);die;
+        $addr = Shipping::create([
+            'email' => $request->email,
+            'name' => $request->name,
+            'city' => $request->city,
+            'address' => $request->address,
+            'phone' => $request->phone,
+            'order_id' => $order->id,
+        ]);
+
+        $return_url = "http://127.0.0.1:8000/epayment/verify";
+        $website_url = "http://127.0.0.1:8000";
+        $khalti = env('KHALTI');
+        $order_id = $order->id;
+        $price = $product->price;
+
+
+        $data = ([
+            "return_url" => $return_url,
+            "website_url" => "https://example.com/",
+            "amount" => $price,
+            "purchase_order_id" => $order_id,
+            "purchase_order_name" => $product->title,
+        ]);
+
+        $response = Http::withHeaders([
+            'Authorization' => 'key bba77349f1814301a97167471b241aea',
+            'Content-Type' => 'application/json',
+        ])->post($khalti . "epayment/initiate/", $data);
+
+        // return $response;
+        $payment = Payment::create([
+            'order_id' => $order_id,
+            'amount' => $product->price,
+            'ref_id' => $response['pidx']
+        ]);
+        // $payment->ref_id = $response['pidx'];
+        // $payment->request_date = Carbon::now();
+        // $payment->save();
+
+        return redirect($response['payment_url']);
+    }
+
+    public function verifyPayment(Request $request)
+    {
+        // return $request->oid;
+
+        $khalti = env('KHALTI');
+
+        $pidx = $request->pidx;
+
+        $data = ([
+            "pidx" => $pidx,
+        ]);
+
+        $response = Http::withHeaders([
+            'Authorization' => 'key bba77349f1814301a97167471b241aea',
+            'Content-Type' => 'application/json',
+        ])->post($khalti . "epayment/lookup/", $data);
+
+        $payment = Payment::where('ref_id', $pidx)->get()->first();
+        $payment->txn_id = $response['transaction_id'];
+        $payment->payment_mode = "khalti";
+        $payment->payment_status = $response['status'];
+        // $payment->response_date = Carbon::now();
+
+        $payment->save();
+
+
+        $order = Order::whereHas('payment', function ($query) use ($pidx) {
+            $query->where('ref_id', $pidx);
+        })->first();
+        // echo "<pre>";print_r($order);echo "</pre>";die;
+        $order->payment_status = $response['status'];
+        if ($response['status'] == "Completed") {
+            $order->is_completed = true;
+        } else {
+            $order->is_completed = false;
+            return response("Order Failed");
+        }
+
+        $order->save();
+
+        // return $response;
+        // return redirect('https://test-pay.khalti.com/wallet?pidx='.$pidx);
+        //https://test-pay.khalti.com/wallet?pidx=tdcUrw3ZJVxYEXRtG74K3S
+        //  return $response;
+        return redirect()->route('pay.success',['pidx' => $pidx]);
+
+    }
+
+    public function paySuccess($pidx){
+        return view('user.pages.paymentSuccess', ['urlp' => 'https://test-pay.khalti.com/wallet?pidx=' . $pidx]);
+
+    }
+
+    
+}
